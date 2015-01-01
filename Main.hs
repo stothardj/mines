@@ -61,7 +61,7 @@ numNeighbors = Set.fold f Map.empty
 
 showLoc :: GameState -> Location -> Char
 showLoc state loc
-  | loc `Set.member` flags = '!'
+  | loc `Set.member` flags = 'F'
   | loc `Set.notMember` revealed = '.'
   | loc `Set.member` mines = '*'
   | otherwise = intToDigit $ Map.findWithDefault 0 loc (numNeighbors mines)
@@ -70,7 +70,7 @@ showLoc state loc
         revealed = gameRevealed state
 
 showRow :: GameState -> Int -> Int -> String
-showRow state width r = map (showLoc state) [Location r c | c <- [1..width]]
+showRow state width r = map (showLoc state . Location r) [1..width]
 
 showBoard :: GameState -> String
 showBoard state = unlines $ map (showRow state width) [1..height]
@@ -162,9 +162,16 @@ gameStart diff = do
                     gameRevealed = Set.empty,
                     gameDimensions = dimensionsForDifficulty diff}
 
--- TODO: Distinguish winning from losing
 isGameOver :: GameState -> Bool
-isGameOver state = False
+isGameOver state = (not . Set.null $ triggeredMines) -- Lose
+                   || (Set.null $ allLocs `Set.difference` correctFlags `Set.difference` rev) -- Win
+  where rev = gameRevealed state
+        mines = gameMines state
+        flags = gameFlags state
+        dim = gameDimensions state
+        triggeredMines = rev `Set.intersection` mines
+        correctFlags = flags `Set.intersection` mines
+        allLocs = Set.fromList $ Location <$> [1..dimHeight dim] <*> [1..dimWidth dim]
 
 gameIteration' :: GameState -> IO GameState
 gameIteration' state = do
@@ -181,21 +188,22 @@ gameIteration state = do
   guard . not $ isGameOver newState
   return newState
 
-iter :: (GameState -> MaybeT IO GameState) -> GameState -> IO ()
-iter f s = do
+iter_ :: Monad m => (a -> MaybeT m a) -> a -> m ()
+iter_ f s = do
   ns <- runMaybeT (f s)
   case ns of
-   Just n -> iter f n
+   Just n -> iter_ f n
    Nothing -> return ()
 
 playGame :: IO ()
 playGame = do
   diff <- queryDifficulty
   startState <- gameStart diff
-  iter gameIteration startState
+  iter_ gameIteration startState
 
 main :: IO ()
 main = do
-  putStr "Welcome to mines!"
+  putStrLn "Welcome to mines!"
   playGame
+  putStrLn "Game over"
 

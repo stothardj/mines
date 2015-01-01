@@ -62,7 +62,6 @@ executable mines
                        random >= 1.1,
                        MonadRandom >= 0.1.3,
                        random-shuffle >= 0.0.4,
-                       lens >= 4.6,
                        regex-posix >= 0.95,
                        transformers >= 0.4.2
   
