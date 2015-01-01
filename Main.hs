@@ -139,7 +139,7 @@ query :: String -> (String -> Maybe r) -> IO r
 query msg = liftM fromJust . runMaybeT . msum . repeat . tryQuery msg
 
 queryLocation :: IO Location
-queryLocation = query "Enter location as row,col" tryParseLocation
+queryLocation = query "Enter location as row,col (1,1 is the top-left)" tryParseLocation
 
 queryAction :: IO UserAction
 queryAction = query "Enter Action: [f]lag, [r]eveal" (\s -> case s of "f" -> Just FlagLocation
