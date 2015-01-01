@@ -7,7 +7,6 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Random
 import System.Random.Shuffle
-import System.Random
 import Text.Regex.Posix
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Class
@@ -46,6 +45,7 @@ mineLocationsForDifficulty diff = do
   numMines <- numMinesForDifficulty diff
   mineLocations (dimensionsForDifficulty diff) numMines
 
+neighbors :: Location -> [Location]
 neighbors loc = [Location (row loc + rd) (col loc + cd) | rd <- [-1..1], cd <- [-1..1], rd /= 0 || cd /= 0]
 
 tally :: Ord k => k -> Map k Int -> Map k Int
@@ -59,6 +59,7 @@ numNeighbors = Set.fold f Map.empty
   where
     f loc m = foldl (flip tally) m (neighbors loc)
 
+showLoc :: GameState -> Location -> Char
 showLoc state loc
   | loc `Set.member` flags = '!'
   | loc `Set.notMember` revealed = '.'
@@ -68,6 +69,7 @@ showLoc state loc
         flags = gameFlags state
         revealed = gameRevealed state
 
+showRow :: GameState -> Int -> Int -> String
 showRow state width r = map (showLoc state) [Location r c | c <- [1..width]]
 
 showBoard :: GameState -> String
@@ -76,18 +78,21 @@ showBoard state = unlines $ map (showRow state width) [1..height]
         width = dimWidth dim
         height = dimHeight dim
 
+floodfill :: (Location -> Bool) -> Set Location -> Location -> Set Location
 floodfill isBlocking revealed loc
   | loc `Set.member` revealed = revealed
   | isBlocking loc = loc `Set.insert` revealed
   | otherwise = foldl f (loc `Set.insert` revealed) (neighbors loc)
   where f = floodfill isBlocking
 
+isOnBoard :: Dimensions -> Location -> Bool
 isOnBoard dim loc = r >= 1 && c >= 1 && r <= height && c <= width
   where r = row loc
         c = col loc
         height = dimHeight dim
         width = dimWidth dim
 
+hasNeighbors :: Set Location  -> Location -> Bool
 hasNeighbors mines loc = loc `Map.member` numNeighbors mines
 
 reveal' :: GameState -> Location -> Set Location
@@ -125,6 +130,7 @@ tryParseLocation s
     r = read $ matches !! 0 !! 1
     c = read $ matches !! 0 !! 2
 
+tryQuery :: String -> (String -> Maybe b) -> MaybeT IO b
 tryQuery msg parser = do
   lift $ putStrLn msg
   MaybeT $ liftM parser getLine
@@ -156,8 +162,12 @@ gameStart diff = do
                     gameRevealed = Set.empty,
                     gameDimensions = dimensionsForDifficulty diff}
 
-gameIteration :: GameState -> IO GameState
-gameIteration state = do
+-- TODO: Distinguish winning from losing
+isGameOver :: GameState -> Bool
+isGameOver state = False
+
+gameIteration' :: GameState -> IO GameState
+gameIteration' state = do
   putStrLn $ showBoard state
   action <- queryAction
   loc <- queryLocation
@@ -165,9 +175,27 @@ gameIteration state = do
             RevealLocation -> reveal state loc
             FlagLocation -> flag state loc
 
+gameIteration :: GameState -> MaybeT IO GameState
+gameIteration state = do
+  newState <- lift $ gameIteration' state
+  guard . not $ isGameOver newState
+  return newState
+
+iter :: (GameState -> MaybeT IO GameState) -> GameState -> IO ()
+iter f s = do
+  ns <- runMaybeT (f s)
+  case ns of
+   Just n -> iter f n
+   Nothing -> return ()
+
+playGame :: IO ()
 playGame = do
   diff <- queryDifficulty
   startState <- gameStart diff
-  gameIteration startState
+  iter gameIteration startState
 
-main = putStrLn "Hello"
+main :: IO ()
+main = do
+  putStr "Welcome to mines!"
+  playGame
+
