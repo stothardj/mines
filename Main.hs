@@ -25,9 +25,12 @@ data Difficulty = Easy | Medium | Hard
 data UserAction = RevealLocation | FlagLocation
                 deriving Show
 
+allLocations :: Dimensions -> [Location]
+allLocations dim = Location <$> [1..numRows dim] <*> [1..numCols dim]
+
 mineLocations :: MonadRandom m => Dimensions -> Int -> m (Set Location)
 mineLocations dim numMines = do
-  mines <- shuffleM $ Location <$> [1..numRows dim] <*> [1..numCols dim]
+  mines <- shuffleM $ allLocations dim
   return $ Set.fromList $ take numMines mines
 
 dimensionsForDifficulty :: Difficulty -> Dimensions
@@ -183,16 +186,23 @@ gameStart diff = do
                     gameRevealed = Set.empty,
                     gameDimensions = dimensionsForDifficulty diff}
 
-isGameOver :: GameState -> Bool
-isGameOver st = (not . Set.null $ triggeredMines) -- Lose
-                   || (Set.null $ allLocs `Set.difference` correctFlags `Set.difference` rev) -- Win
+isWin :: GameState -> Bool
+isWin st = Set.null $ allLocs `Set.difference` correctFlags `Set.difference` rev
   where rev = gameRevealed st
         mines = gameMines st
         flags = gameFlags st
         dim = gameDimensions st
-        triggeredMines = rev `Set.intersection` mines
         correctFlags = flags `Set.intersection` mines
-        allLocs = Set.fromList $ Location <$> [1..numRows dim] <*> [1..numCols dim]
+        allLocs = Set.fromList $ allLocations dim
+
+isLoss :: GameState -> Bool
+isLoss st = not . Set.null $ triggeredMines
+  where rev = gameRevealed st
+        mines = gameMines st
+        triggeredMines = rev `Set.intersection` mines
+
+isGameOver :: GameState -> Bool
+isGameOver st = isWin st || isLoss st
 
 gameIteration' :: GameState -> IO GameState
 gameIteration' st = do
@@ -210,12 +220,19 @@ gameIteration = do
   put nstate
   return nstate
 
+revealLoss :: GameState -> IO ()
+revealLoss st = do
+  putStrLn "Boom!"
+  putStrLn $ showBoard (st {gameRevealed = Set.fromList $ allLocations (gameDimensions st),
+                            gameFlags = Set.empty})
+
 playGame :: IO ()
 playGame = do
   diff <- queryDifficulty
   startState <- gameStart diff
   finalState <- execStateT (iterateUntil isGameOver gameIteration) startState
   putStrLn $ showBoard finalState
+  when (isLoss finalState) $ revealLoss finalState
   return ()
 
 main :: IO ()
