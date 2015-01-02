@@ -11,8 +11,10 @@ import Text.Regex.Posix
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Class
 import Data.Maybe
+import Control.Monad.Trans.State.Lazy
+import Control.Monad.Loops
 
-data Dimensions = Dimensions { dimWidth :: Int, dimHeight :: Int}
+data Dimensions = Dimensions { numRows :: Int, numCols :: Int}
 data Location = Location { row :: Int, col :: Int}
               deriving (Eq,Ord,Show)
 data GameState = GameState { gameMines :: Set Location,
@@ -25,7 +27,7 @@ data UserAction = RevealLocation | FlagLocation
 
 mineLocations :: MonadRandom m => Dimensions -> Int -> m (Set Location)
 mineLocations dim numMines = do
-  mines <- shuffleM $ Location <$> [1..dimWidth dim] <*> [1..dimHeight dim]
+  mines <- shuffleM $ Location <$> [1..numRows dim] <*> [1..numCols dim]
   return $ Set.fromList $ take numMines mines
 
 dimensionsForDifficulty :: Difficulty -> Dimensions
@@ -60,23 +62,23 @@ numNeighbors = Set.fold f Map.empty
     f loc m = foldl (flip tally) m (neighbors loc)
 
 showLoc :: GameState -> Location -> Char
-showLoc state loc
+showLoc st loc
   | loc `Set.member` flags = 'F'
   | loc `Set.notMember` revealed = '.'
   | loc `Set.member` mines = '*'
   | otherwise = intToDigit $ Map.findWithDefault 0 loc (numNeighbors mines)
-  where mines = gameMines state
-        flags = gameFlags state
-        revealed = gameRevealed state
+  where mines = gameMines st
+        flags = gameFlags st
+        revealed = gameRevealed st
 
 showRow :: GameState -> Int -> Int -> String
-showRow state width r = map (showLoc state . Location r) [1..width]
+showRow st nCols r = map (showLoc st . Location r) [1..nCols]
 
 showBoard :: GameState -> String
-showBoard state = unlines $ map (showRow state width) [1..height]
-  where dim = gameDimensions state
-        width = dimWidth dim
-        height = dimHeight dim
+showBoard st = unlines $ map (showRow st nCols) [1..nRows]
+  where dim = gameDimensions st
+        nRows = numRows dim
+        nCols = numCols dim
 
 floodfill :: (Location -> Bool) -> Set Location -> Location -> Set Location
 floodfill isBlocking revealed loc
@@ -86,39 +88,41 @@ floodfill isBlocking revealed loc
   where f = floodfill isBlocking
 
 isOnBoard :: Dimensions -> Location -> Bool
-isOnBoard dim loc = r >= 1 && c >= 1 && r <= height && c <= width
+isOnBoard dim loc = r >= 1 && c >= 1 && r <= nRows && c <= nCols
   where r = row loc
         c = col loc
-        height = dimHeight dim
-        width = dimWidth dim
+        nRows = numRows dim
+        nCols = numCols dim
 
 hasNeighbors :: Set Location  -> Location -> Bool
 hasNeighbors mines loc = loc `Map.member` numNeighbors mines
 
 reveal' :: GameState -> Location -> Set Location
-reveal' state loc
+reveal' st loc
   | loc `Set.member` mines = loc `Set.insert` revealed
   | loc `Set.member` flags = revealed
   | loc `Set.member` revealed = revealed -- TODO: reveal neighbors you could be trivially certain of
   | otherwise = floodfill (\l -> (hasNeighbors mines l) || (not (isOnBoard dim l))) revealed loc
-  where dim = gameDimensions state
-        mines = gameMines state
-        flags = gameFlags state
-        revealed = gameRevealed state
+  where dim = gameDimensions st
+        mines = gameMines st
+        flags = gameFlags st
+        revealed = gameRevealed st
 
 reveal :: GameState -> Location -> GameState
-reveal state loc = state { gameRevealed = reveal' state loc }
+reveal st loc = st { gameRevealed = reveal' st loc }
 
 flag' :: GameState -> Location -> Set Location
-flag' state loc
+flag' st loc
   | loc `Set.member` flags = loc `Set.delete` flags
+  | loc `Set.member` revealed = flags
   | isOnBoard dim loc = loc `Set.insert` flags
   | otherwise = flags
-  where dim = gameDimensions state
-        flags = gameFlags state
+  where dim = gameDimensions st
+        flags = gameFlags st
+        revealed = gameRevealed st
 
 flag :: GameState -> Location -> GameState
-flag state loc = state { gameFlags = flag' state loc}
+flag st loc = st { gameFlags = flag' st loc}
 
 tryParseLocation :: String -> Maybe Location
 tryParseLocation s
@@ -130,16 +134,33 @@ tryParseLocation s
     r = read $ matches !! 0 !! 1
     c = read $ matches !! 0 !! 2
 
+tryGetLocation :: Dimensions -> String -> Either String Location
+tryGetLocation dim s = case tryParseLocation s of
+                    Nothing -> Left "Could not parse location"
+                    Just l -> if isOnBoard dim l then Right l else Left "Location is off the board"
+
 tryQuery :: String -> (String -> Maybe b) -> MaybeT IO b
 tryQuery msg parser = do
   lift $ putStrLn msg
   MaybeT $ liftM parser getLine
 
+tryQueryWithResponse :: String -> (String -> Either String b) -> IO (Either String b)
+tryQueryWithResponse msg parser = do
+  putStrLn msg
+  liftM parser getLine
+
 query :: String -> (String -> Maybe r) -> IO r
 query msg = liftM fromJust . runMaybeT . msum . repeat . tryQuery msg
 
-queryLocation :: IO Location
-queryLocation = query "Enter location as row,col (1,1 is the top-left)" tryParseLocation
+queryWithResponse :: String -> (String -> Either String b) -> IO b
+queryWithResponse msg parser = do
+  resp <- tryQueryWithResponse msg parser
+  case resp of
+   Left s -> putStrLn s >> queryWithResponse msg parser
+   Right l -> return l
+
+queryLocation :: Dimensions -> IO Location
+queryLocation dim = queryWithResponse "Enter location as row,col (1,1 is the top-left)" (tryGetLocation dim)
 
 queryAction :: IO UserAction
 queryAction = query "Enter Action: [f]lag, [r]eveal" (\s -> case s of "f" -> Just FlagLocation
@@ -163,43 +184,39 @@ gameStart diff = do
                     gameDimensions = dimensionsForDifficulty diff}
 
 isGameOver :: GameState -> Bool
-isGameOver state = (not . Set.null $ triggeredMines) -- Lose
+isGameOver st = (not . Set.null $ triggeredMines) -- Lose
                    || (Set.null $ allLocs `Set.difference` correctFlags `Set.difference` rev) -- Win
-  where rev = gameRevealed state
-        mines = gameMines state
-        flags = gameFlags state
-        dim = gameDimensions state
+  where rev = gameRevealed st
+        mines = gameMines st
+        flags = gameFlags st
+        dim = gameDimensions st
         triggeredMines = rev `Set.intersection` mines
         correctFlags = flags `Set.intersection` mines
-        allLocs = Set.fromList $ Location <$> [1..dimHeight dim] <*> [1..dimWidth dim]
+        allLocs = Set.fromList $ Location <$> [1..numRows dim] <*> [1..numCols dim]
 
 gameIteration' :: GameState -> IO GameState
-gameIteration' state = do
-  putStrLn $ showBoard state
+gameIteration' st = do
+  putStrLn $ showBoard st
   action <- queryAction
-  loc <- queryLocation
+  loc <- queryLocation (gameDimensions st)
   return $ case action of
-            RevealLocation -> reveal state loc
-            FlagLocation -> flag state loc
+            RevealLocation -> reveal st loc
+            FlagLocation -> flag st loc
 
-gameIteration :: GameState -> MaybeT IO GameState
-gameIteration state = do
-  newState <- lift $ gameIteration' state
-  guard . not $ isGameOver newState
-  return newState
-
-iter_ :: Monad m => (a -> MaybeT m a) -> a -> m ()
-iter_ f s = do
-  ns <- runMaybeT (f s)
-  case ns of
-   Just n -> iter_ f n
-   Nothing -> return ()
+gameIteration :: StateT GameState IO GameState
+gameIteration = do
+  cstate <- get
+  nstate <- lift $ gameIteration' cstate
+  put nstate
+  return nstate
 
 playGame :: IO ()
 playGame = do
   diff <- queryDifficulty
   startState <- gameStart diff
-  iter_ gameIteration startState
+  finalState <- execStateT (iterateUntil isGameOver gameIteration) startState
+  putStrLn $ showBoard finalState
+  return ()
 
 main :: IO ()
 main = do
