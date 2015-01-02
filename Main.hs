@@ -100,11 +100,26 @@ isOnBoard dim loc = r >= 1 && c >= 1 && r <= nRows && c <= nCols
 hasNeighbors :: Set Location  -> Location -> Bool
 hasNeighbors mines loc = loc `Map.member` numNeighbors mines
 
+-- Result of revealing an already revealed location is to reveal the trivially deduced neighbors.
+-- This must assume that the flagged locations are correct, otherwise it would provide a means to
+-- check the correctness of flags.
+-- The logic is, if the number of neighboring mines in the location is equal to the number of
+-- neighboring flags, then reveal all other neighboring locations.
+revealTrivial :: GameState -> Location -> Set Location
+revealTrivial st loc
+  | Set.size neighborMines == Set.size neighborFlags = gameRevealed $ Set.foldl reveal st neighborUnrevealed
+  | otherwise = revealed
+  where revealed = gameRevealed st
+        nl = Set.fromList $ neighbors loc
+        neighborMines = gameMines st `Set.intersection` nl
+        neighborFlags = gameFlags st `Set.intersection` nl
+        neighborUnrevealed = nl `Set.difference` gameRevealed st `Set.difference` neighborFlags
+
 reveal' :: GameState -> Location -> Set Location
 reveal' st loc
   | loc `Set.member` mines = loc `Set.insert` revealed
   | loc `Set.member` flags = revealed
-  | loc `Set.member` revealed = revealed -- TODO: reveal neighbors you could be trivially certain of
+  | loc `Set.member` revealed = revealTrivial st loc
   | otherwise = floodfill (\l -> (hasNeighbors mines l) || (not (isOnBoard dim l))) revealed loc
   where dim = gameDimensions st
         mines = gameMines st
