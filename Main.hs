@@ -233,7 +233,6 @@ playGame = do
   finalState <- execStateT (iterateUntil isGameOver gameIteration) startState
   putStrLn $ showBoard finalState
   when (isLoss finalState) $ revealLoss finalState
-  return ()
 
 main :: IO ()
 main = do
