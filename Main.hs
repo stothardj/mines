@@ -22,7 +22,7 @@ data GameState = GameState { gameMines :: Set Location,
                              gameRevealed :: Set Location,
                              gameDimensions :: Dimensions }
 data Difficulty = Easy | Medium | Hard
-data UserAction = RevealLocation | FlagLocation
+data UserAction = RevealLocation | FlagLocation | Quit
                 deriving Show
 
 allLocations :: Dimensions -> [Location]
@@ -181,9 +181,10 @@ queryLocation :: Dimensions -> IO Location
 queryLocation dim = queryWithResponse "Enter location as row,col (1,1 is the top-left)" (tryGetLocation dim)
 
 queryAction :: IO UserAction
-queryAction = query "Enter Action: [f]lag, [r]eveal" (\s -> case s of "f" -> Just FlagLocation
-                                                                      "r" -> Just RevealLocation
-                                                                      _ -> Nothing)
+queryAction = query "Enter Action: [f]lag, [r]eveal, [q]uit" (\s -> case s of "f" -> Just FlagLocation
+                                                                              "r" -> Just RevealLocation
+                                                                              "q" -> Just Quit
+                                                                              _ -> Nothing)
 
 queryDifficulty :: IO Difficulty
 queryDifficulty = query "Enter Difficulty: [e]asy, [m]edium, [h]ard" (\s -> case s of
@@ -210,30 +211,38 @@ isWin st = Set.null $ allLocs `Set.difference` correctFlags `Set.difference` rev
         correctFlags = flags `Set.intersection` mines
         allLocs = Set.fromList $ allLocations dim
 
-isLoss :: GameState -> Bool
-isLoss st = not . Set.null $ triggeredMines
+isLoss :: UserAction -> GameState -> Bool
+isLoss Quit _ = True
+isLoss _ st = not . Set.null $ triggeredMines
   where rev = gameRevealed st
         mines = gameMines st
         triggeredMines = rev `Set.intersection` mines
 
-isGameOver :: GameState -> Bool
-isGameOver st = isWin st || isLoss st
+isGameOver :: (UserAction, GameState) -> Bool
+isGameOver (act, st) = isWin st || isLoss act st
 
-gameIteration' :: GameState -> IO GameState
+execAction :: UserAction -> GameState -> IO GameState
+execAction RevealLocation st = do
+  loc <- queryLocation (gameDimensions st)
+  return $ reveal st loc
+execAction FlagLocation st = do
+  loc <- queryLocation (gameDimensions st)
+  return $ flag st loc
+execAction Quit st = return st
+
+gameIteration' :: GameState -> IO (UserAction, GameState)
 gameIteration' st = do
   putStrLn $ showBoard st
   action <- queryAction
-  loc <- queryLocation (gameDimensions st)
-  return $ case action of
-            RevealLocation -> reveal st loc
-            FlagLocation -> flag st loc
+  nst <- execAction action st
+  return (action, nst)
 
-gameIteration :: StateT GameState IO GameState
+gameIteration :: StateT GameState IO (UserAction, GameState)
 gameIteration = do
   cstate <- get
-  nstate <- lift $ gameIteration' cstate
+  (action, nstate) <- lift $ gameIteration' cstate
   put nstate
-  return nstate
+  return (action, nstate)
 
 revealLoss :: GameState -> IO ()
 revealLoss st = do
@@ -245,9 +254,9 @@ playGame :: IO ()
 playGame = do
   diff <- queryDifficulty
   startState <- gameStart diff
-  finalState <- execStateT (iterateUntil isGameOver gameIteration) startState
+  (finalAction, finalState) <- evalStateT (iterateUntil isGameOver gameIteration) startState
   putStrLn $ showBoard finalState
-  when (isLoss finalState) $ revealLoss finalState
+  when (isLoss finalAction finalState) $ revealLoss finalState
 
 main :: IO ()
 main = do
